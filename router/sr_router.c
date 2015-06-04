@@ -81,12 +81,6 @@ void sr_handlepacket(struct sr_instance* sr,
   /* fill in code here */
   /* define ARP or IP packet*/
   uint16_t eType = ethertype(packet);
-  if(eType == 0x0806){
-    printf("We receive an arp packet\n");
-  }
-  else if (eType == 0x0800){
-    printf("We receive an ip packet\n"); 
-  }
   /* It's ARP */
   if(eType == 0x0806){
     sr_handlearp(sr, packet, len, interface); 
@@ -115,7 +109,6 @@ void sr_handlearp (struct sr_instance* sr,
   
   if(ntohs(arpdr->ar_op) == 0x0001){
     /* It's arp request */
-    printf("We receive an arp request\n"); 
     /* fill arp replay */
     arpdr->ar_op = htons(0x0002);
     /* Get and fill send arp header*/
@@ -125,7 +118,6 @@ void sr_handlearp (struct sr_instance* sr,
     uint32_t temp = arpdr->ar_sip;
     arpdr->ar_sip = arpdr->ar_tip;
     arpdr->ar_tip = temp;
-    printf("Arp header filled\n"); 
     /* Create packet */
     int templen = sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t);
     uint8_t *sendPacket = (uint8_t *)malloc(templen);
@@ -135,10 +127,8 @@ void sr_handlearp (struct sr_instance* sr,
     memcpy(sendEhdr->ether_dhost, ehdr->ether_shost, ETHER_ADDR_LEN);
     memcpy(sendEhdr->ether_shost, arpIf->addr, ETHER_ADDR_LEN);
     sendEhdr->ether_type = htons(0x0806);
-    printf("Ether head filled\n"); 
     memcpy(sendPacket, sendEhdr, sizeof(sr_ethernet_hdr_t) );
     memcpy(sendPacket + sizeof(sr_ethernet_hdr_t), arpdr, sizeof(sr_arp_hdr_t));
-    printf("Packet filled\ns");
     sr_send_packet(sr, sendPacket, templen, interface);
     return;            
   }
@@ -232,11 +222,32 @@ void sr_handleip(struct sr_instance* sr,
       sr_ip_hdr_t *ipdrOut = (uint8_t*) malloc(sizeof(sr_ip_hdr_t));
       memcpy(ipdrOut, packet+sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
       ipdrOut->ip_ttl = ipdrOut->ip_ttl - 1;
-      /* recalculate cksum */
+
+      /* LPM */
+      struct sr_rt* selectedSr = LPM(destIp, sr);
+      struct sr_if* selectedIf = sr_get_interface(sr, selectedSr->interface);
+      printf("%s\n", selectedSr->interface);
+      /* get eth by this and ifname is selectedSr->interface*/   
+      /* struct sr_arpentry * sr_arpcache_lookup(sr->cache, htonl(destIp));*/
+    
+
+
+
+
+
+
+
+
+
+
+
+      /* recalculate cksum（not now） */
       uint8_t* ipdrNoSumNew = (uint8_t*) malloc(sizeof(sr_ip_hdr_t)-2);
       memcpy(ipdrNoSumNew, (uint8_t*)ipdrOut, sizeof(sr_ip_hdr_t)-10);
       memcpy(ipdrNoSumNew+sizeof(sr_ip_hdr_t)-10, (uint8_t*)ipdrOut+sizeof(sr_ip_hdr_t)-8, 8);
       ipdrOut->ip_sum = cksum (ipdrNoSumNew, sizeof(sr_ip_hdr_t)-2);
+
+
       
     }
   }
@@ -246,7 +257,53 @@ void sr_handleip(struct sr_instance* sr,
 
 }
 
+struct sr_rt* LPM(uint32_t ip, struct sr_instance *sr){
+  struct sr_rt *temproutingtable = sr->routing_table;
+  int counter = 0;
+  struct sr_rt *result;
+  uint8_t map[8] = {128,192,224,240,248,252,254,255};
+  while(temproutingtable != NULL){
+    uint8_t m1 = (ntohl(temproutingtable->mask.s_addr) & 0xff000000)>>24;
+    uint8_t m2 = (ntohl(temproutingtable->mask.s_addr) & 0x00ff0000)>>16;
+    uint8_t m3 = (ntohl(temproutingtable->mask.s_addr) & 0x0000ff00)>>8;
+    uint8_t m4 = (ntohl(temproutingtable->mask.s_addr) & 0x000000ff);
+    int c_mask = 0;
+    int i;
+    for(i = 0; i < 8; i++){
+      if(m1 == map[i]){
+        c_mask = i + 1;
+      }
+    }
+    for(i = 0; i < 8; i++){
+      if(m2 == map[i]){
+        c_mask = c_mask + i + 1;
+      }
+    }
+    for(i = 0; i < 8; i++){
+      if(m3 == map[i]){
+        c_mask = c_mask + i + 1;
+      }
+    }
+    for(i = 0; i < 8; i++){
+      if(m4 == map[i]){
+        c_mask = c_mask + i + 1;
+      }
+    }
 
+    uint32_t tempdest = ntohl(temproutingtable->dest.s_addr) & ntohl(temproutingtable->mask.s_addr);
+
+    if (tempdest == (ip & ntohl(temproutingtable->mask.s_addr))){
+      if (counter < c_mask){
+        counter = c_mask;
+        result = temproutingtable;
+      }
+    }
+    temproutingtable = temproutingtable->next;
+  }
+
+
+  return result;
+}
 
 
 
