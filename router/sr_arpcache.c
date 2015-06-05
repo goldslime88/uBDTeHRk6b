@@ -18,6 +18,68 @@
 */
 void sr_arpcache_sweepreqs(struct sr_instance *sr) { 
     /* Fill this in */
+    struct sr_arpcache *pCache = &(sr->cache);
+    struct sr_arpreq *pRequest = pCache->requests;
+    while(pRequest != NULL){
+        
+        struct sr_arpreq *temp = pRequest->next;
+        handle_arpreq(pRequest, sr);
+        pRequest = temp;
+    }
+
+}
+
+void handle_arpreq(struct sr_arpreq *req, struct sr_instance *sr){
+    time_t now;
+    time(&now);
+    if(difftime(now,req->sent) > 1.0){
+        if(req->times_sent >= 5){
+            struct sr_packet *pPacket = req->packets;
+            while(pPacket != NULL){
+                
+                sr_send_icmp3(sr, pPacket->buf, pPacket->len, 3, 1, pPacket->iface);
+                pPacket = pPacket->next;        
+            }
+            sr_arpreq_destroy(&(sr->cache), req);
+        }
+        else{
+            /* need broadcast*/
+            struct sr_if* ifList = sr->if_list;
+            while(ifList != NULL){
+                
+                uint8_t* outPacket = (uint8_t*)malloc(sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t));
+
+                /* fill arp */
+
+                sr_arp_hdr_t *sendArp = (uint8_t*)malloc(sizeof(sr_arp_hdr_t));
+                sendArp->ar_hrd = htons(0x0001);             /* format of hardware address   */
+                sendArp->ar_pro = htons(0x0800);             /* format of protocol address   */
+                sendArp->ar_hln = ETHER_ADDR_LEN;             /* length of hardware address   */
+                sendArp->ar_pln = 4;             /* length of protocol address   */
+                sendArp->ar_op = htons(0x0001);              /* ARP opcode (command)         */
+                memcpy(sendArp->ar_sha, ifList->addr, ETHER_ADDR_LEN);
+                sendArp->ar_sip = ifList->ip;
+                sendArp->ar_tip = req->ip;
+
+                /* fill ether */
+                sr_ethernet_hdr_t *sendEthr = (uint8_t*)malloc(sizeof(sr_ethernet_hdr_t));
+                memset(sendEthr->ether_dhost, 0xff, ETHER_ADDR_LEN);
+                memcpy(sendEthr->ether_shost, ifList->addr, ETHER_ADDR_LEN);
+                sendEthr->ether_type = htons(0x0806);
+
+                memcpy(outPacket, sendEthr, sizeof(sr_ethernet_hdr_t));
+                memcpy(outPacket+sizeof(sr_ethernet_hdr_t), sendArp, sizeof(sr_arp_hdr_t));
+                sr_send_packet(sr, outPacket, sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t), 
+                    ifList->name);
+
+                ifList = ifList -> next;
+            }
+                                  
+            req->sent = now;
+            req->times_sent++;
+
+        }
+    }
 }
 
 /* You should not need to touch the rest of this code. */

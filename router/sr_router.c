@@ -132,8 +132,53 @@ void sr_handlearp (struct sr_instance* sr,
     sr_send_packet(sr, sendPacket, templen, interface);
     return;            
   }
-  else if(arpdr->ar_op == 0x0002){
-    /* It's arp request */
+  else if(ntohs(arpdr->ar_op) == 0x0002){
+    /* It's arp reply */
+    struct sr_arpreq * getReq = sr_arpcache_insert(&(sr->cache), arpdr->ar_sha, arpdr->ar_sip);
+    if(getReq != NULL){
+      /* forwarding! */
+      struct sr_packet* pPacket = getReq->packets;
+      while(pPacket != NULL){
+        uint8_t* outPacket = (uint8_t*) malloc(pPacket->len);
+        memcpy(outPacket, pPacket->buf, pPacket->len);
+
+        sr_ethernet_hdr_t* sendEhdr = (uint8_t*) malloc(sizeof(sr_ethernet_hdr_t));
+        memcpy((uint8_t*)sendEhdr, outPacket, sizeof(sr_ethernet_hdr_t));
+        memcpy(sendEhdr->ether_dhost, arpdr->ar_sha, ETHER_ADDR_LEN);
+        memcpy(sendEhdr->ether_shost, arpdr->ar_tha, ETHER_ADDR_LEN);
+        /* TLL decrement */
+        sr_ip_hdr_t* sendIp = (uint8_t*) malloc(sizeof(sr_ip_hdr_t));
+        memcpy((uint8_t*)sendIp, outPacket+sizeof(sr_ethernet_hdr_t), 
+          sizeof(sr_ip_hdr_t));
+        sendIp->ip_ttl = sendIp->ip_ttl - 1;
+        sendIp->ip_sum = 0;
+        sendIp->ip_sum = cksum(sendIp, sizeof(sr_ip_hdr_t));
+
+        memcpy(outPacket, sendEhdr, sizeof(sr_ethernet_hdr_t));
+        memcpy(outPacket+sizeof(sr_ethernet_hdr_t), sendIp, sizeof(sr_ip_hdr_t));
+
+        /*get interface name*/
+        struct sr_if* ifList = sr->if_list;
+        struct sr_if* if_walker = 0;
+        while(ifList != NULL){
+          if(!strncmp(ifList->addr,arpdr->ar_tha,ETHER_ADDR_LEN)){ 
+            if_walker = ifList;
+            break;
+          }
+          ifList = ifList->next;
+        }
+
+        sr_send_packet(sr, outPacket, pPacket->len, if_walker->name);
+        pPacket = pPacket->next;
+
+      }
+
+    }
+    sr_arpreq_destroy(&(sr->cache), getReq);
+    
+
+    return;
+
   }
 } 
 
@@ -218,34 +263,67 @@ void sr_handleip(struct sr_instance* sr,
     }
     else{
       /* this packet is not for me */
-      /* decrement TTL */
-      sr_ip_hdr_t *ipdrOut = (uint8_t*) malloc(sizeof(sr_ip_hdr_t));
-      memcpy(ipdrOut, packet+sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
-      ipdrOut->ip_ttl = ipdrOut->ip_ttl - 1;
 
       /* LPM */
       struct sr_rt* selectedSr = LPM(destIp, sr);
-      struct sr_if* selectedIf = sr_get_interface(sr, selectedSr->interface);
-      printf("%s\n", selectedSr->interface);
+      if(selectedSr != NULL){
+        /* rtable ip matched */
+        /* check if in cache */     
+        struct sr_arpentry * findEntry = sr_arpcache_lookup(&(sr->cache), htonl(destIp));
+        if(findEntry == NULL){
+          /* not in cache, add arp request in queue*/
+          sr_arpcache_queuereq(&(sr->cache), htonl(destIp), packet, len, interface);
+                                       
+
+        }
+        else{
+          /* forwarding */
+
+          /* get out-interface */
+          struct sr_if* outIf = sr_get_interface(sr, selectedSr->interface);
+          /* get dest-mac */
+          uint8_t *macAddr = (uint8_t *) malloc(6);
+          memcpy(macAddr, findEntry->mac, 6);
+          
+          uint8_t* outPacket = (uint8_t*) malloc(len);
+          memcpy(outPacket, packet, len);
+
+          sr_ethernet_hdr_t* sendEhdr = (uint8_t*) malloc(sizeof(sr_ethernet_hdr_t));
+          memcpy((uint8_t*)sendEhdr, outPacket, sizeof(sr_ethernet_hdr_t));
+          memcpy(sendEhdr->ether_dhost, macAddr, ETHER_ADDR_LEN);
+          memcpy(sendEhdr->ether_shost, outIf->addr, ETHER_ADDR_LEN);
+          /* TLL decrement */
+          sr_ip_hdr_t* sendIp = (uint8_t*) malloc(sizeof(sr_ip_hdr_t));
+          memcpy((uint8_t*)sendIp, outPacket+sizeof(sr_ethernet_hdr_t), 
+            sizeof(sr_ip_hdr_t));
+          sendIp->ip_ttl = sendIp->ip_ttl - 1;
+          sendIp->ip_sum = 0;
+          sendIp->ip_sum = cksum(sendIp, sizeof(sr_ip_hdr_t));
+
+          memcpy(outPacket, sendEhdr, sizeof(sr_ethernet_hdr_t));
+          memcpy(outPacket+sizeof(sr_ethernet_hdr_t), sendIp, sizeof(sr_ip_hdr_t));
+
+          sr_send_packet(sr, outPacket, len, outIf->name);
+
+          free(findEntry);
+
+
+        }
+
       /* get eth by this and ifname is selectedSr->interface*/   
       /* struct sr_arpentry * sr_arpcache_lookup(sr->cache, htonl(destIp));*/
+
+
+      }
+      else{
+        /* rtable ip isn't matched */
+        /* send ICMP network unreachable back */
+        sr_send_icmp3(sr, packet, len, 3, 0, interface);
+      }
+
+      
     
 
-
-
-
-
-
-
-
-
-
-
-      /* recalculate cksum（not now） */
-      uint8_t* ipdrNoSumNew = (uint8_t*) malloc(sizeof(sr_ip_hdr_t)-2);
-      memcpy(ipdrNoSumNew, (uint8_t*)ipdrOut, sizeof(sr_ip_hdr_t)-10);
-      memcpy(ipdrNoSumNew+sizeof(sr_ip_hdr_t)-10, (uint8_t*)ipdrOut+sizeof(sr_ip_hdr_t)-8, 8);
-      ipdrOut->ip_sum = cksum (ipdrNoSumNew, sizeof(sr_ip_hdr_t)-2);
 
 
       
@@ -289,9 +367,7 @@ struct sr_rt* LPM(uint32_t ip, struct sr_instance *sr){
         c_mask = c_mask + i + 1;
       }
     }
-
     uint32_t tempdest = ntohl(temproutingtable->dest.s_addr) & ntohl(temproutingtable->mask.s_addr);
-
     if (tempdest == (ip & ntohl(temproutingtable->mask.s_addr))){
       if (counter < c_mask){
         counter = c_mask;
@@ -300,13 +376,47 @@ struct sr_rt* LPM(uint32_t ip, struct sr_instance *sr){
     }
     temproutingtable = temproutingtable->next;
   }
-
-
   return result;
 }
 
+void sr_send_icmp3(struct sr_instance *sr, uint8_t * packet, unsigned int len, uint8_t icmp_type,
+  uint8_t icmp_code, char* interface){
+  int len1 = sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t) + sizeof(sr_icmp_t3_hdr_t);
+  uint8_t *outPacket = (uint8_t *) malloc(len1);
+  sr_icmp_t3_hdr_t * sendIcmp = (uint8_t*) malloc(sizeof(sr_icmp_t3_hdr_t));
+  sendIcmp->icmp_type = icmp_type;
+  sendIcmp->icmp_code = icmp_code;
+  memcpy(sendIcmp->data, packet+sizeof(sr_ethernet_hdr_t), ICMP_DATA_SIZE);
+  sendIcmp->icmp_sum = 0;
+  sendIcmp->icmp_sum = cksum(sendIcmp, sizeof(sr_icmp_t3_hdr_t));
+
+  sr_ip_hdr_t *sendIp = (uint8_t*) malloc(sizeof(sr_ip_hdr_t));
+  memcpy(sendIp, packet+sizeof(sr_ethernet_hdr_t), sizeof(sr_ip_hdr_t));
+  sendIp->ip_len = htons(sizeof(sr_ip_hdr_t)+ sizeof(sr_icmp_t3_hdr_t));
+  sendIp->ip_p = ip_protocol_icmp;
+  sendIp->ip_dst = sendIp->ip_src;
+  struct sr_if* myIf = sr_get_interface(sr, interface);
+  sendIp->ip_src = myIf->ip;
+  sendIp->ip_ttl = INIT_TTL;
+  sendIp->ip_sum = 0;
+  sendIp->ip_sum = cksum(sendIp, sizeof(sr_ip_hdr_t));
+
+  sr_ethernet_hdr_t *sendEhdr = (uint8_t*) malloc(sizeof(sr_ethernet_hdr_t));
+  memcpy(sendEhdr, packet, sizeof(sr_ethernet_hdr_t));
+  uint8_t* tempEthAddr = (uint8_t*) malloc(ETHER_ADDR_LEN);
+  memcpy(tempEthAddr, sendEhdr->ether_dhost, ETHER_ADDR_LEN);
+  memcpy(sendEhdr->ether_dhost, sendEhdr->ether_shost, ETHER_ADDR_LEN);
+  memcpy(sendEhdr->ether_shost, tempEthAddr, ETHER_ADDR_LEN);
+
+  memcpy(outPacket, sendEhdr, sizeof(sr_ethernet_hdr_t));
+  memcpy(outPacket+sizeof(sr_ethernet_hdr_t), sendIp, sizeof(sr_ip_hdr_t));
+  memcpy(outPacket+sizeof(sr_ethernet_hdr_t)+sizeof(sr_ip_hdr_t), sendIcmp, 
+    sizeof(sr_icmp_t3_hdr_t));
+
+  sr_send_packet(sr,outPacket,len1,interface);
 
 
 
 
 
+}
