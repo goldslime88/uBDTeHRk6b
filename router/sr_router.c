@@ -305,11 +305,6 @@ void sr_handleip(struct sr_instance* sr,
           memcpy((uint8_t*)sendIp, outPacket+sizeof(sr_ethernet_hdr_t), 
             sizeof(sr_ip_hdr_t));
           /* check ttl */ 
-          /*if(sendIp->ip_ttl == 1){
-            sr_send_icmp3(sr, packet, len, 11, 0, interface);
-            free(findEntry);
-            return;
-          }*/
           sendIp->ip_ttl = sendIp->ip_ttl - 1;
 
 

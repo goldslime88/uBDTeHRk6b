@@ -1,8 +1,3 @@
-Readme File of Project #2
-
-Lijun Chen
-A53071897
-
 Firstly, I briefly describle my design decision in this project.
 
 1. void handle_arpreq(struct sr_arpreq *req, struct sr_instance *sr)
